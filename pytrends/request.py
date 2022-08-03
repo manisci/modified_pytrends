@@ -14,6 +14,17 @@ from pytrends import exceptions
 
 from urllib.parse import quote
 
+import os
+
+from requests_ip_rotator import ApiGateway, EXTRA_REGIONS
+
+AWS_ACCESS_KEY_ID = os.environ["AWS_ACCESS_KEY_ID"]
+AWS_SECRET_ACCESS_KEY = os.environ["AWS_SECRET_ACCESS_KEY"]
+
+
+
+
+
 
 class TrendReq(object):
     """
@@ -34,7 +45,7 @@ class TrendReq(object):
     ERROR_CODES = (500, 502, 504, 429)
 
     def __init__(self, hl='en-US', tz=360, geo='', timeout=(2, 5), proxies='',
-                 retries=0, backoff_factor=0, requests_args=None):
+                 retries=10, backoff_factor=0, requests_args=None):
         """
         Initialize default values for params
         """
@@ -59,6 +70,9 @@ class TrendReq(object):
         self.interest_by_region_widget = dict()
         self.related_topics_widget_list = list()
         self.related_queries_widget_list = list()
+
+        # self.gateway = ApiGateway('https://trends.google.com',access_key_id = AWS_ACCESS_KEY_ID, access_key_secret = AWS_SECRET_ACCESS_KEY)
+        # self.gateway.start()
 
     def GetGoogleCookie(self):
         """
@@ -116,15 +130,25 @@ class TrendReq(object):
         :param kwargs: any extra key arguments passed to the request builder (usually query parameters or data)
         :return:
         """
+        # print (url)
+
+        gateway = ApiGateway('https://trends.google.com',access_key_id = AWS_ACCESS_KEY_ID, access_key_secret = AWS_SECRET_ACCESS_KEY)
+        gateway.start()
+
         s = requests.session()
+        # gateway = ApiGateway('https://trends.google.com',access_key_id = AWS_ACCESS_KEY_ID, access_key_secret = AWS_SECRET_ACCESS_KEY)
+        # gateway.start()
+        s.mount("https://trends.google.com", gateway)
+
         # Retries mechanism. Activated when one of statements >0 (best used for proxy)
-        if self.retries > 0 or self.backoff_factor > 0:
-            retry = Retry(total=self.retries, read=self.retries,
-                          connect=self.retries,
-                          backoff_factor=self.backoff_factor,
-                          status_forcelist=TrendReq.ERROR_CODES,
-                          method_whitelist=frozenset(['GET', 'POST']))
-            s.mount('https://', HTTPAdapter(max_retries=retry))
+        # if self.retries > 0 or self.backoff_factor > 0:
+        #     retry = Retry(total=self.retries, read=self.retries,
+        #                   connect=self.retries,
+        #                   backoff_factor=self.backoff_factor,
+        #                   status_forcelist=TrendReq.ERROR_CODES,
+        #                   method_whitelist=frozenset(['GET', 'POST']))
+            # s.mount('https://', HTTPAdapter(max_retries=retry))
+
 
         s.headers.update({'accept-language': self.hl})
         if len(self.proxies) > 0:
@@ -158,6 +182,7 @@ class TrendReq(object):
                 'The request failed: Google returned a '
                 'response with code {0}.'.format(response.status_code),
                 response=response)
+        gateway.shutdown()
 
     def build_payload(self, kw_list, cat=0, timeframe='today 5-y', geo='',
                       gprop=''):
@@ -299,17 +324,13 @@ class TrendReq(object):
             return df
 
         # rename the column with the search keyword
-        geo_column = 'geoCode' if 'geoCode' in df.columns else 'coordinates'
-        columns = ['geoName', geo_column, 'value']
-        df = df[columns].set_index(['geoName']).sort_index()
+        df = df[['geoName', 'geoCode', 'value']].set_index(
+            ['geoName']).sort_index()
         # split list columns into separate ones, remove brackets and split on comma
         result_df = df['value'].apply(lambda x: pd.Series(
             str(x).replace('[', '').replace(']', '').split(',')))
         if inc_geo_code:
-            if geo_column in df.columns:
-                result_df[geo_column] = df[geo_column]
-            else:
-                print('Could not find geo_code column; Skipping')
+            result_df['geoCode'] = df['geoCode']
 
         # rename each column with its search term
         for idx, kw in enumerate(self.kw_list):
@@ -428,7 +449,8 @@ class TrendReq(object):
         # forms = {'ajax': 1, 'pn': pn, 'htd': '', 'htv': 'l'}
         req_json = self._get_data(
             url=TrendReq.TRENDING_SEARCHES_URL,
-            method=TrendReq.GET_METHOD
+            method=TrendReq.GET_METHOD,
+            **self.requests_args
         )[pn]
         result_df = pd.DataFrame(req_json)
         return result_df
@@ -440,7 +462,8 @@ class TrendReq(object):
             url=TrendReq.TODAY_SEARCHES_URL,
             method=TrendReq.GET_METHOD,
             trim_chars=5,
-            params=forms
+            params=forms,
+            **self.requests_args
         )['default']['trendingSearchesDays'][0]['trendingSearches']
         result_df = pd.DataFrame()
         # parse the returned json
@@ -506,7 +529,8 @@ class TrendReq(object):
             url=TrendReq.TOP_CHARTS_URL,
             method=TrendReq.GET_METHOD,
             trim_chars=5,
-            params=chart_payload
+            params=chart_payload,
+            **self.requests_args
         )
         try:
             df = pd.DataFrame(req_json['topCharts'][0]['listItems'])
@@ -525,7 +549,8 @@ class TrendReq(object):
             url=TrendReq.SUGGESTIONS_URL + kw_param,
             params=parameters,
             method=TrendReq.GET_METHOD,
-            trim_chars=5
+            trim_chars=5,
+            **self.requests_args
         )['default']['topics']
         return req_json
 
@@ -538,14 +563,15 @@ class TrendReq(object):
             url=TrendReq.CATEGORIES_URL,
             params=params,
             method=TrendReq.GET_METHOD,
-            trim_chars=5
+            trim_chars=5,
+            **self.requests_args
         )
         return req_json
 
     def get_historical_interest(self, keywords, year_start=2018, month_start=1,
                                 day_start=1, hour_start=0, year_end=2018,
                                 month_end=2, day_end=1, hour_end=0, cat=0,
-                                geo='', gprop='', sleep=0, frequency='hourly'):
+                                geo='', gprop='', sleep=60, frequency='hourly'):
         """Gets historical hourly data for interest by chunking requests to 1 week at a time (which is what Google allows)"""
 
         # construct datetime objects - raises ValueError if invalid parameters
@@ -557,7 +583,7 @@ class TrendReq(object):
         # 7 days for hourly
         # ~250 days for daily (270 seems to be max but sometimes breaks?)
         # For weekly can pull any date range so no method required here
-
+        
         if frequency == 'hourly':
             delta = timedelta(days=7)
         elif frequency == 'daily':

@@ -2,11 +2,16 @@ from datetime import date, timedelta
 from functools import partial
 from time import sleep
 from calendar import monthrange
-
+import os
 import pandas as pd
-
+import requests
 from pytrends.exceptions import ResponseError
 from pytrends.request import TrendReq
+
+from requests_ip_rotator import ApiGateway, EXTRA_REGIONS
+
+AWS_ACCESS_KEY_ID = os.environ["AWS_ACCESS_KEY_ID"]
+AWS_SECRET_ACCESS_KEY = os.environ["AWS_SECRET_ACCESS_KEY"]
 
 
 def get_last_date_of_month(year: int, month: int) -> date:
@@ -37,7 +42,7 @@ def _fetch_data(pytrends, build_payload, timeframe: str) -> pd.DataFrame:
             print(f'Trying again in {60 + 5 * attempts} seconds.')
             sleep(60 + 5 * attempts)
             attempts += 1
-            if attempts > 3:
+            if attempts > 6:
                 print('Failed after 3 attemps, abort fetching.')
                 break
         else:
@@ -89,6 +94,14 @@ def get_daily_data(word: str,
             daily data.
     """
 
+    gateway = ApiGateway('https://trends.google.com',access_key_id = AWS_ACCESS_KEY_ID, access_key_secret = AWS_SECRET_ACCESS_KEY)
+    gateway.start()
+
+    s = requests.session()
+    # gateway = ApiGateway('https://trends.google.com',access_key_id = AWS_ACCESS_KEY_ID, access_key_secret = AWS_SECRET_ACCESS_KEY)
+    # gateway.start()
+    s.mount("https://trends.google.com", gateway)
+
     # Set up start and stop dates
     start_date = date(start_year, start_mon, 1) 
     stop_date = get_last_date_of_month(stop_year, stop_mon)
@@ -114,7 +127,7 @@ def get_daily_data(word: str,
             print(f'{word}:{timeframe}')
         results[current] = _fetch_data(pytrends, build_payload, timeframe)
         current = last_date_of_month + timedelta(days=1)
-        sleep(wait_time)  # don't go too fast or Google will send 429s
+        sleep(2 * wait_time)  # don't go too fast or Google will send 429s
 
     daily = pd.concat(results.values()).drop(columns=['isPartial'])
     complete = daily.join(monthly, lsuffix='_unscaled', rsuffix='_monthly')
@@ -123,5 +136,7 @@ def get_daily_data(word: str,
     complete[f'{word}_monthly'].ffill(inplace=True)  # fill NaN values
     complete['scale'] = complete[f'{word}_monthly'] / 100
     complete[word] = complete[f'{word}_unscaled'] * complete.scale
+
+    gateway.shutdown()
 
     return complete
